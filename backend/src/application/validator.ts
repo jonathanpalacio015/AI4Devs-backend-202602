@@ -1,6 +1,7 @@
 const NAME_REGEX = /^[a-zA-ZñÑáéíóúÁÉÍÓÚ ]+$/;
 const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-const PHONE_REGEX = /^(6|7|9)\d{8}$/;
+const LOCAL_PHONE_REGEX = /^(6|7|9)\d{8}$/;
+const INTERNATIONAL_PHONE_REGEX = /^\d{10,15}$/;
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 //Length validations according to the database schema
@@ -17,10 +18,46 @@ const validateEmail = (email: string) => {
     }
 };
 
-const validatePhone = (phone: string) => {
-    if (phone && !PHONE_REGEX.test(phone)) {
+const normalizePhone = (phone: string): string => {
+    let sanitizedPhone = phone.trim().replace(/[\s\-()]/g, '');
+
+    if (sanitizedPhone.startsWith('+')) {
+        sanitizedPhone = sanitizedPhone.slice(1);
+    }
+
+    if (sanitizedPhone.startsWith('00')) {
+        sanitizedPhone = sanitizedPhone.slice(2);
+    }
+
+    if (sanitizedPhone.startsWith('34') && sanitizedPhone.length === 11) {
+        const withoutSpainPrefix = sanitizedPhone.slice(2);
+        if (LOCAL_PHONE_REGEX.test(withoutSpainPrefix)) {
+            sanitizedPhone = withoutSpainPrefix;
+        }
+    }
+
+    return sanitizedPhone;
+};
+
+const validatePhone = (phone: unknown): string | undefined => {
+    if (phone === undefined || phone === null || phone === '') {
+        return undefined;
+    }
+
+    if (typeof phone !== 'string') {
         throw new Error('Invalid phone');
     }
+
+    const normalizedPhone = normalizePhone(phone);
+
+    const isValidLocalPhone = LOCAL_PHONE_REGEX.test(normalizedPhone);
+    const isValidInternationalPhone = INTERNATIONAL_PHONE_REGEX.test(normalizedPhone);
+
+    if (!isValidLocalPhone && !isValidInternationalPhone) {
+        throw new Error('Invalid phone');
+    }
+
+    return normalizedPhone;
 };
 
 const validateDate = (date: string) => {
@@ -86,7 +123,7 @@ export const validateCandidateData = (data: any) => {
     validateName(data.firstName); 
     validateName(data.lastName); 
     validateEmail(data.email);
-    validatePhone(data.phone);
+    data.phone = validatePhone(data.phone);
     validateAddress(data.address);
 
     if (data.educations) {

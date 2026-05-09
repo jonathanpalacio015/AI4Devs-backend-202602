@@ -3,6 +3,18 @@ import { validateCandidateData } from '../validator';
 import { Education } from '../../domain/models/Education';
 import { WorkExperience } from '../../domain/models/WorkExperience';
 import { Resume } from '../../domain/models/Resume';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+export interface PositionCandidateInProcess {
+    applicationId: number;
+    candidateId: number;
+    fullName: string;
+    current_interview_step: number;
+    averageScore: number | null;
+    average_score: number | null;
+}
 
 export const addCandidate = async (candidateData: any) => {
     try {
@@ -62,4 +74,166 @@ export const findCandidateById = async (id: number): Promise<Candidate | null> =
         console.error('Error al buscar el candidato:', error);
         throw new Error('Error al recuperar el candidato');
     }
+};
+
+export const getCandidatesInProcessByPosition = async (positionId: number): Promise<PositionCandidateInProcess[]> => {
+    const applications = await prisma.application.findMany({
+        where: { positionId },
+        include: {
+            candidate: {
+                select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                },
+            },
+            interviews: {
+                select: {
+                    score: true,
+                },
+            },
+        },
+    });
+
+    return applications.map((application) => {
+        const scores = application.interviews
+            .map((interview) => interview.score)
+            .filter((score): score is number => score !== null);
+
+        const averageScore = scores.length > 0
+            ? scores.reduce((sum, score) => sum + score, 0) / scores.length
+            : null;
+
+        return {
+            applicationId: application.id,
+            candidateId: application.candidate.id,
+            fullName: `${application.candidate.firstName || 'N/A'} ${application.candidate.lastName || 'N/A'}`.trim(),
+            current_interview_step: application.currentInterviewStep,
+            averageScore,
+            average_score: averageScore,
+        };
+    });
+};
+
+export const updateCandidateStage = async (
+    candidateId: number,
+    positionId: number,
+    currentInterviewStep: number
+) => {
+    const application = await prisma.application.findFirst({
+        where: {
+            candidateId,
+            positionId,
+        },
+        orderBy: {
+            applicationDate: 'desc',
+        },
+    });
+
+    if (!application) {
+        return null;
+    }
+
+    return prisma.application.update({
+        where: { id: application.id },
+        data: { currentInterviewStep },
+        include: {
+            candidate: {
+                select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                },
+            },
+            position: {
+                select: {
+                    id: true,
+                    title: true,
+                },
+            },
+        },
+    });
+};
+
+export const assignInterviewScore = async (
+    candidateId: number,
+    positionId: number,
+    score: number
+) => {
+    const application = await prisma.application.findFirst({
+        where: {
+            candidateId,
+            positionId,
+        },
+        orderBy: {
+            applicationDate: 'desc',
+        },
+        include: {
+            position: {
+                select: {
+                    companyId: true,
+                },
+            },
+        },
+    });
+
+    if (!application) {
+        return null;
+    }
+
+    const employee = await prisma.employee.findFirst({
+        where: {
+            companyId: application.position.companyId,
+            isActive: true,
+        },
+        select: {
+            id: true,
+        },
+    });
+
+    if (!employee) {
+        const error: any = new Error('No active interviewer available for this company');
+        error.code = 'NO_ACTIVE_EMPLOYEE';
+        throw error;
+    }
+
+    const existingInterview = await prisma.interview.findFirst({
+        where: {
+            applicationId: application.id,
+            interviewStepId: application.currentInterviewStep,
+        },
+        orderBy: {
+            interviewDate: 'desc',
+        },
+    });
+
+    if (existingInterview) {
+        return prisma.interview.update({
+            where: { id: existingInterview.id },
+            data: {
+                score,
+                result: 'Scored',
+            },
+        });
+    }
+
+    const maxInterview = await prisma.interview.aggregate({
+        _max: {
+            id: true,
+        },
+    });
+
+    const nextInterviewId = (maxInterview._max.id ?? 0) + 1;
+
+    return prisma.interview.create({
+        data: {
+            id: nextInterviewId,
+            applicationId: application.id,
+            interviewStepId: application.currentInterviewStep,
+            employeeId: employee.id,
+            interviewDate: new Date(),
+            score,
+            result: 'Scored',
+        },
+    });
 };
